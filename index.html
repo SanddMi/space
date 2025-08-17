@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Flask + GitHub Pages Demo</title>
+</head>
+<body>
+  <h1>Frontend on GitHub Pages</h1>
+
+  <button onclick="callHello()">Call /api/hello</button>
+  <p id="hello"></p>
+
+  <input id="echoInput" placeholder="Type something">
+  <button onclick="callEcho()">Send to /api/echo</button>
+  <p id="echo"></p>
+
+  <script>
+    const backendURL = "https://11a60e8550f6.ngrok-free.app";
+
+    async function callHello() {
+      const res = await fetch(`${backendURL}/api/hello`);
+      const data = await res.json();
+      document.getElementById("hello").textContent = data.message;
+    }
+
+    async function callEcho() {
+      const text = document.getElementById("echoInput").value;
+      const res = await fetch(`${backendURL}/api/echo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      document.getElementById("echo").textContent = JSON.stringify(data.received);
+    }
+  </script>
+</body>
+</html>
