@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SpaceChat</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='jquery.js') }}"></script>
+</head>
+<body>
+    <div id="online-users-container">
+        <h3>Online Users</h3>
+        <div id="online-users-list"></div>
+    </div>
+
+    <div>
+        <div id="profile-section">
+        <div id="profile-pic-container">
+            <img id="profile-pic" src="{{ session.get('profile_pic', '/static/default_profile.png') }}" alt="Profile Picture">
+            <input type="file" id="profile-pic-input" accept="image/*" style="display: none;">
+        </div>
+
+        <div id="user-info">
+            Logged in as: <strong>{{ username }}</strong>
+            <button onclick="window.location.href='/logout'" id="logout-btn">Logout</button>
+        </div>
+    </div>
+
+    <div class="context-menu" role="menu">
+        <div class="menu-item" role="menuitem">Copy Text</div>
+        <div class="menu-item" role="menuitem">Edit Message</div>
+        <div class="menu-item" role="menuitem" style="color: rgb(235, 64, 52)">Delete Message</div>
+    </div>
+
+    <div id="image-modal" class="image-modal hidden">
+      <img id="modal-image" src="" alt="Zoomed Image">
+    </div>
+
+
+    <div id="mainWrapper">
+        <div id="messages"></div>
+        
+        <div id="chatContainer">
+            <div id="mediaPreview"></div>
+            <form id="uploadForm" enctype="multipart/form-data" onsubmit="return false;">
+                <label for="videoFile">Upload a File</label><br>
+                <input type="file" id="videoFile" name="video">
+            </form>
+            <textarea id="userInput" placeholder="Message" spellcheck="false" style="height: 10px;"></textarea>
+            <div id="chat"></div>
+            <button id="send" onclick="sendText()">Send</button>
+        </div>
+    </div>
+
+    <p id="inp"></p>
+    <p id="uploadStatus" style="color: red;"></p>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/respond.js') }}"></script>
+
+    <script>
+        const nicknameInput = document.getElementById("nickname");
+        const $userInput = $('#userInput');
+        const minHeight = 24;
+        const socket = io();
+        let typingTimeout;
+
+        const currentUsername = "{{ username }}";
+        function getNickname() {
+            return currentUsername || 'Guest';
+        }
+
+        $('#userInput').on('input', function () {
+            const message = $(this).val();
+            const nickname = getNickname();
+
+            if (!nickname) return;
+
+            socket.emit('typing', { nickname, message });
+
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+              socket.emit('stop_typing', { nickname });
+            }, 1000);
+        });
+
+        $(document).on('click', '#messages img', function () {
+          const src = $(this).attr('src');
+          $('#modal-image').attr('src', src);
+          $('#image-modal').removeClass('hidden');
+        });
+
+        $('#image-modal').on('click', function () {
+          $('#image-modal').addClass('hidden');
+          $('#modal-image').attr('src', '');
+        });
+
+        $(document).ready(function() {
+            $('#profile-pic').click(function() {
+                $('#profile-pic-input').click();
+            });
+
+            $('#profile-pic-input').change(function() {
+                const file = this.files[0];
+                if (!file) return;
+
+                const formData = new FormData();
+                formData.append('file', file);
+
+                $.ajax({
+                    url: '/upload_profile_pic',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        if (response.success) {
+                            $('#profile-pic').attr('src', response.url);
+                        } else {
+                            alert('Error: ' + (response.error || 'Failed to upload'));
+                        }
+                    },
+                    error: function() {
+                        alert('Network error during upload');
+                    }
+                });
+            });
+        });
+
+
+        function resetAndAdjustHeight($textarea, minHeight = 24) {
+            $textarea.height('auto');
+            if ($textarea[0].scrollHeight > minHeight) {
+                const newHeight = Math.min($textarea[0].scrollHeight, 20);
+                $textarea.height(newHeight);
+            }
+        }
+
+        function autoResizeTextarea() {
+            resetAndAdjustHeight($userInput, minHeight);
+        }
+
+        function copyText(text) {
+            navigator.clipboard.writeText(text).catch(() => {});
+        }
+
+        function escapeHtml(text) {
+            return $('<div>').text(text).html();
+        }
+
+        function formatMessageText(text) {
+            return escapeHtml(text).replace(/\n/g, "<br>");
+        }
+
+        function htmlBrToNewline(html) {
+            return html.replace(/<br\s*\/?>/gi, '\n');
+        }
+
+        function parseLinks(text) {
+          const urlRegex = /(https?:\/\/[^\s]+)/g;
+          return text.replace(urlRegex, function(url) {
+            return `<a href="${url}" target="_blank" style="color: blue; text-decoration: underline;">${url}</a>`;
+          });
+        }
+
+        $userInput.on('input', autoResizeTextarea);
+        autoResizeTextarea();
+
+        $(document).on('contextmenu', 'div.me', function (e) {
+            e.preventDefault();
+
+             $('.context-menu').css({
+                top: e.pageY + 'px',
+                left: e.pageX + 'px',
+                display: 'block',
+            }).data('target', this);
+
+        })
+
+        $(document).on('click', '.menu-item', function() {
+            const action = $(this).text();
+            const targetElem = $('.context-menu').data('target');
+            const msgId = $(targetElem).data('message-id');
+
+            if (action == "Delete Message" && msgId !== undefined) {
+                socket.emit('delete_message', msgId);
+            } else if (action === 'Copy Text') {
+                const messageText = $(targetElem).find('div').eq(1).text().trim();
+                copyText(messageText);
+            } else if (action == 'Edit Message' && msgId !== undefined) {
+                const messageElement = $(targetElem).find('div').eq(1);
+                const originalHtml = messageElement.html().trim();
+                const originalText = htmlBrToNewline(originalHtml);
+                const textarea = $(`<textarea class="edit-area" spellcheck="false">${originalText}</textarea>`);
+                
+                $(messageElement).replaceWith(textarea)
+                textarea.focus()
+                textarea[0].setSelectionRange(originalText.length, originalText.length)
+
+                textarea.on('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    const newText = textarea.val().trim();
+
+                    if (newText === '') {
+                        socket.emit('delete_message', msgId);
+                    } else {
+                        const newDiv = $('<div>').text(newText);
+                        textarea.replaceWith(newDiv);
+                        socket.emit('edit_message', { id: msgId, text: newText });
+
+                        if (newText !== originalText) {
+                            $(targetElem).find('.edited-text').text('Edited');
+                        } else {
+                            $(targetElem).find('.edited-text').text('');
+                        }
+                    }
+                    }
+                });
+            }
+        })
+
+        $(document).on('click', function () {
+            $('.context-menu').hide();
+        });
+
+        $userInput.on('paste', function(e) {
+            const items = (e.originalEvent || e).clipboardData.items;
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.kind === 'file') {
+                    const file = item.getAsFile();
+                    if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
+                        showMediaPreview(file);
+                        const dataTransfer = new DataTransfer();
+                        dataTransfer.items.add(file);
+                        document.getElementById('videoFile').files = dataTransfer.files;
+                        break;
+                    }
+                }
+            }
+        });
+
+        function showMediaPreview(file) {
+            const $previewContainer = $("#mediaPreview");
+            $previewContainer.empty();
+
+            const url = URL.createObjectURL(file);
+            const $wrapper = $("<div>").css({
+                position: "relative",
+                display: "inline-block"
+            });
+
+            const $removeBtn = $("<span>")
+                .text("❌")
+                .css({
+                    position: "absolute",
+                    top: "0",
+                    right: "0",
+                    cursor: "pointer",
+                    background: "rgba(0,0,0,0.5)",
+                    color: "#fff",
+                    padding: "2px 5px",
+                    borderRadius: "5px",
+                    fontSize: "14px"
+                })
+                .on("click", function () {
+                    $previewContainer.empty();
+                    $("#videoFile").val("");
+                });
+
+            $wrapper.append($removeBtn);
+
+            if (file.type.startsWith("image/")) {
+                const $img = $("<img>").attr("src", url).css({
+                    maxWidth: "200px",
+                    borderRadius: "10px"
+                });
+                $wrapper.append($img);
+            } else if (file.type.startsWith("video/")) {
+                const $video = $("<video>").attr({
+                    src: url,
+                    controls: true
+                }).css({
+                    width: "200px",
+                    borderRadius: "10px"
+                });
+                $wrapper.append($video);
+            } else {
+                const fileName = file.name;
+                const fileType = fileName.split('.').pop().toLowerCase();
+                
+                if (fileType === 'rar') {
+                    $wrapper.append($("<div>").text(`RAR Archive: ${fileName}`).css({
+                        padding: "10px",
+                        background: "#f0f0f0",
+                        borderRadius: "5px"
+                    }));
+                } else {
+                    $wrapper.text(`File: ${fileName} (Unsupported type)`);
+                }
+            }
+
+            $previewContainer.append($wrapper);
+        }
+
+        $("#videoFile").on("change", function () {
+            const file = this.files[0];
+            showMediaPreview(file);
+        });
+
+        function addMessage(msg) {
+            const $messagesDiv = $('#messages');
+            let mediaHTML = "";
+            if (msg.media_url) {
+                if (/\.(jpg|jpeg|png|gif|webp)$/i.test(msg.media_url)) {
+                    mediaHTML = `
+                        <div class="message-media">
+                            <img src="${msg.media_url}" 
+                                 style="max-height: 400px; border-radius: 10px;">
+                        </div>`;
+                } 
+                else if (/\.(mp4|webm|ogg|mov)$/i.test(msg.media_url)) {
+                    const mime = msg.media_url.endsWith('.webm') ? 'video/webm'
+                               : msg.media_url.endsWith('.ogg') ? 'video/ogg'
+                               : msg.media_url.endsWith('.mov') ? 'video/quicktime'
+                               : 'video/mp4';
+                    mediaHTML = `
+                        <div class="message-media">
+                            <video controls width="400" style="border-radius: 10px;">
+                                <source src="${msg.media_url}" type="${mime}">
+                                Your browser does not support the video tag.
+                            </video>
+                        </div>`;
+                } 
+                else if (/\.rar$/i.test(msg.media_url)) {
+                    mediaHTML = `
+                        <div class="file-message" style="padding: 10px; background: #f0f0f0; border-radius: 5px;">
+                            <a href="${msg.media_url}" download>RAR Archive (Click to download)</a>
+                        </div>`;
+                }
+            }
+
+            const isMe = (msg.nickname === currentUsername);
+            const time = new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            let editedTextHTML = '';
+            if (msg.edited) {
+                editedTextHTML = `<span class="edited-text">Edited</span>`;
+            } else {
+                editedTextHTML = `<span class="edited-text"></span>`;
+            }
+
+            const $messageContainer = $('<div>').addClass('message-container');
+            if (isMe) {
+                $messageContainer.addClass('me');
+            }
+
+            $messageContainer.html(`
+                <div class="message-content">
+                    <img src="${msg.profile_pic || '/static/default_profile.png'}" class="message-profile-pic">
+                    <div class="message-body">
+                        <div class="message-header">
+                            <span class="message-username">${escapeHtml(msg.nickname)}</span>
+                            <span class="timestamp-inline">${time}</span>
+                        </div>
+                        <div class="message-text">${parseLinks(formatMessageText(msg.text))}</div>
+                        ${mediaHTML}
+                        ${editedTextHTML}
+                    </div>
+                </div>
+            `);
+
+            $messagesDiv.append($messageContainer);
+            $messagesDiv.scrollTop($messagesDiv[0].scrollHeight);
+        }
+
+        async function sendText() {
+            const textInput = document.getElementById('userInput');
+            const nicknameInput = document.getElementById('nickname');
+            const fileInput = document.getElementById("videoFile");
+            const file = fileInput.files[0];
+            const messagesDiv = document.getElementById('messages');
+            let mediaUrl = null;
+
+            autoResizeTextarea();
+
+            if (!textInput.value.trim() && !file) {
+                return;
+            }
+
+            if (file) {
+                const formData = new FormData();
+                formData.append("video", file);
+
+                try {
+                    const response = await fetch("/upload_video", { method: "POST", body: formData });
+                    const data = await response.json();
+
+                    if (data.success && data.url) {
+                        mediaUrl = data.url;
+                        $("#videoFile").val("");
+                        $("#mediaPreview").empty();
+                    } else {
+                        document.getElementById("uploadStatus").textContent = `❌ Upload failed: ${data.error || 'Unknown error'}`;
+                        return;
+                    }
+                } catch (e) {
+                    document.getElementById("uploadStatus").textContent = "⚠️ Network error during upload.";
+                    return;
+                }
+            }
+
+            socket.emit('send_message', {
+                text: textInput.value.trim(),
+                nickname: currentUsername,
+                media_url: mediaUrl,
+                timestamp: Date.now()
+            });
+
+            textInput.value = "";
+            resetAndAdjustHeight($userInput, minHeight);
+        }
+
+        $('#userInput').on('keydown', function(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendText();
+            }
+        });
+
+        socket.on('connect', () => {
+            socket.emit('register_user', currentUsername);
+            socket.emit('get_messages');
+        });
+
+        socket.on('update_online_users', (users) => {
+            const onlineUsersList = document.getElementById('online-users-list');
+            onlineUsersList.innerHTML = '';
+            
+            users.forEach(user => {
+                const userElement = document.createElement('div');
+                userElement.className = 'online-user';
+                userElement.textContent = user;
+                onlineUsersList.appendChild(userElement);
+            });
+        });
+
+        window.addEventListener('beforeunload', () => {
+            socket.emit('disconnect_user', currentUsername);
+        });
+
+        socket.on('load_messages', (allMessages) => {
+            const $messagesDiv = $('#messages');
+            $messagesDiv.empty();
+            allMessages.forEach(msg => {
+                addMessage(msg);
+            });
+            $messagesDiv.scrollTop($messagesDiv[0].scrollHeight);
+        });
+
+        socket.on('new_message', (msg) => {
+            addMessage(msg);
+        });
+
+        socket.on('remove_message', (msgId) => {
+            $(`p[data-message-id="${msgId}"]`).remove();
+        });
+
+        socket.on('update_message', (msg) => {
+            const $messageContainer = $(`div.message-container[data-message-id="${msg.id}"]`);
+            if ($messageElem.length) {
+                let mediaHTML = "";
+                if (msg.media_url) {
+                    if (/\.(jpg|jpeg|png|gif|webp)$/i.test(msg.media_url)) {
+                        mediaHTML = `
+                            <div class="message-media">
+                                <img src="${msg.media_url}" 
+                                     style="max-height: 400px; border-radius: 10px;">
+                            </div>`;
+                    } else if (/\.(mp4|webm|ogg|mov)$/i.test(msg.media_url)) {
+                        const mime = msg.media_url.endsWith('.webm') ? 'video/webm'
+                                   : msg.media_url.endsWith('.ogg') ? 'video/ogg'
+                                   : msg.media_url.endsWith('.mov') ? 'video/quicktime'
+                                   : 'video/mp4';
+                        mediaHTML = `
+                            <div class="message-media">
+                                <video controls width="400" style="border-radius: 10px;">
+                                    <source src="${msg.media_url}" type="${mime}">
+                                    Your browser does not support the video tag.
+                                </video>
+                            </div>`;
+                    } else if (/\.rar$/i.test(msg.media_url)) {
+                        mediaHTML = `
+                            <div class="file-message" style="padding: 10px; background: #f0f0f0; border-radius: 5px;">
+                                <a href="${msg.media_url}" download>RAR Archive (Click to download)</a>
+                            </div>`;
+                    }
+                }
+                const time = new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+                let editedTextHTML = '';
+                if (msg.edited) {
+                    editedTextHTML = `<span class="edited-text">Edited</span>`;
+                } else {
+                    editedTextHTML = `<span class="edited-text"></span>`;
+                }
+
+                $messageContainer.html(`
+                    <div class="message-content">
+                        <img src="${msg.profile_pic || '/static/default_profile.png'}" class="message-profile-pic">
+                        <div class="message-body">
+                            <div class="message-header">
+                                <span class="message-username">${escapeHtml(msg.nickname)}</span>
+                                <span class="timestamp-inline">${time}</span>
+                            </div>
+                            <div class="message-text">${parseLinks(formatMessageText(msg.text))}</div>
+                            ${mediaHTML}
+                            ${editedTextHTML}
+                        </div>
+                    </div>
+                `);
+            }
+        });
+
+        const currentlyTyping = new Set();
+
+        function updateTypingBubble() {
+            const names = Array.from(currentlyTyping);
+            let msg = "";
+
+            if (names.length === 0) {
+                $('#typing-bubble').remove();
+                return;
+            }
+
+            if (names.length === 1) {
+                msg = `${escapeHtml(names[0])} is typing...`;
+            } else if (names.length === 2) {
+                msg = `${escapeHtml(names[0])} and ${escapeHtml(names[1])} are typing...`;
+            } else if (names.length === 3) {
+                msg = `${escapeHtml(names[0])}, ${escapeHtml(names[1])} and ${escapeHtml(names[2])} are typing...`;
+            } else if (names.length > 3) {
+                msg = `${escapeHtml(names[0])}, ${escapeHtml(names[1])} and more users are typing...`;
+            }
+
+            if ($('#typing-bubble').length === 0) {
+                $('#chat').append(`<div class="typing-bubble" id="typing-bubble"></div>`);
+            }
+            $('#typing-bubble').text(msg);
+        }
+
+        socket.on('user_typing', function (data) {
+            const nick = data.nickname;
+            if (!nick) return;
+            currentlyTyping.add(nick);
+            updateTypingBubble();
+        });
+
+        socket.on('user_stopped_typing', function (data) {
+            const nick = data.nickname;
+            if (!nick) return;
+            currentlyTyping.delete(nick);
+            updateTypingBubble();
+        });
+
+    </script>
+</body>
+</html>

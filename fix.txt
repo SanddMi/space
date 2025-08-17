@@ -1,0 +1,15 @@
+Fix new lines with textarea
+
+fix all about nickname
+add id user
+
+fix file without name
+
+FIXED BUGS:
+- No gone reply - edit text
+- Keep reply text your input
+- Width reply
+
+fix scroll down / up when someone types
+
+add to support files: zip and txt
