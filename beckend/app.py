@@ -16,12 +16,6 @@ socketio = SocketIO(app, cors_allowed_origins='*')
 UPLOAD_FOLDER = os.path.join(app.root_path, 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-UPLOAD_FOLDER = os.path.join(app.root_path, 'uploads')
-
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename)
-
 messages = []
 message_counter = 0
 message_lock = threading.Lock()
